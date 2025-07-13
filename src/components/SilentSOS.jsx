@@ -1,15 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
 
-// -- Crypto helpers --
-const bufferToBase64 = (buffer) => {
-  const bytes = new Uint8Array(buffer);
-  let binary = '';
-  for (let i = 0; i < bytes.byteLength; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
-};
-
 const encryptData = async (data, password = 'emergency-key-2024') => {
   const encoder = new TextEncoder();
   const keyMaterial = await window.crypto.subtle.importKey(
@@ -19,6 +9,7 @@ const encryptData = async (data, password = 'emergency-key-2024') => {
     false,
     ['deriveKey']
   );
+
   const key = await window.crypto.subtle.deriveKey(
     {
       name: 'PBKDF2',
@@ -31,207 +22,286 @@ const encryptData = async (data, password = 'emergency-key-2024') => {
     false,
     ['encrypt']
   );
+
   const iv = window.crypto.getRandomValues(new Uint8Array(12));
   const encrypted = await window.crypto.subtle.encrypt(
     { name: 'AES-GCM', iv },
     key,
-    data
+    encoder.encode(typeof data === 'string' ? data : JSON.stringify(data))
   );
+
   return {
     encrypted: new Uint8Array(encrypted),
     iv
   };
 };
 
-// -- Local storage uploader --
-const saveToLocalStorage = async (encryptedData, metadata) => {
-  const id = `evidence-${metadata.type}-${Date.now()}`;
-  const payload = {
-    metadata,
-    iv: bufferToBase64(encryptedData.iv),
-    encrypted: bufferToBase64(encryptedData.encrypted)
-  };
-  localStorage.setItem(id, JSON.stringify(payload));
-  return { success: true, id };
-};
-
 const SilentSOS = () => {
-  const [clickCount, setClickCount] = useState(0);
-  const [sosActive, setSosActive] = useState(false);
-  const [error, setError] = useState('');
-  const clickTimerRef = useRef(null);
+  const [weather] = useState({
+    location: 'New York, NY',
+    temperature: 72,
+    condition: 'Partly Cloudy',
+    humidity: 65,
+    windSpeed: 8,
+    forecast: [
+      { day: 'Today', high: 75, low: 62, condition: 'Sunny' },
+      { day: 'Tomorrow', high: 78, low: 65, condition: 'Cloudy' },
+      { day: 'Wednesday', high: 73, low: 60, condition: 'Rainy' }
+    ]
+  });
 
-  // Triple click triggers SOS
+  const [clickCount, setClickCount] = useState(0);
+  const clickTimerRef = useRef(null);
+  const [downloadVisible, setDownloadVisible] = useState(false);
+
   const handleCloudClick = () => {
-    setClickCount(prev => prev + 1);
+    setClickCount((prev) => prev + 1);
     clearTimeout(clickTimerRef.current);
-    clickTimerRef.current = setTimeout(() => setClickCount(0), 3000);
+    clickTimerRef.current = setTimeout(() => {
+      setClickCount(0);
+    }, 3000);
+
     if (clickCount + 1 >= 3) {
       triggerSOS();
       setClickCount(0);
     }
   };
 
-  // Keyboard shortcut: Ctrl+Shift+S triggers SOS
   useEffect(() => {
-    const keyHandler = (e) => {
+    const handleKeyDown = (e) => {
       if (e.ctrlKey && e.shiftKey && e.key === 'S') {
         e.preventDefault();
         triggerSOS();
       }
+      if (e.ctrlKey && e.shiftKey && e.key === 'D') {
+        e.preventDefault();
+        setDownloadVisible((prev) => !prev);
+      }
     };
-    window.addEventListener('keydown', keyHandler);
-    return () => window.removeEventListener('keydown', keyHandler);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // Main SOS trigger
   const triggerSOS = async () => {
-    if (sosActive) return;
-    setSosActive(true);
-    setError('');
-    try {
-      await Promise.all([
-        startVideoRecording(),
-        startAudioRecording(),
-        startScreenRecording(),
-        captureLocation()
-      ]);
-    } catch (e) {
-      setError('SOS Error: ' + e.message);
-      setSosActive(false);
-    }
+    await Promise.all([
+      startVideoRecording(),
+      startAudioRecording(),
+      startScreenRecording(),
+      captureLocation()
+    ]);
   };
 
-  // Video recording
   const startVideoRecording = async () => {
     try {
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const hasVideo = devices.some(d => d.kind === 'videoinput');
-      if (!hasVideo) {
-        setError('No camera found.');
-        return;
-      }
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-      const recorder = new window.MediaRecorder(stream);
+      const recorder = new MediaRecorder(stream);
       const chunks = [];
-      recorder.ondataavailable = (e) => chunks.push(e.data);
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunks.push(e.data);
+      };
+
       recorder.onstop = async () => {
         const blob = new Blob(chunks, { type: 'video/webm' });
-        await processAndStore(blob, 'video');
-        stream.getTracks().forEach(t => t.stop());
+        await processAndSave(blob, 'video');
+        stream.getTracks().forEach((t) => t.stop());
       };
+
       recorder.start();
       setTimeout(() => recorder.state === 'recording' && recorder.stop(), 30000);
-    } catch (e) {
-      setError('Video recording failed: ' + e.message);
-    }
+    } catch {}
   };
 
-  // Audio recording
   const startAudioRecording = async () => {
     try {
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const hasAudio = devices.some(d => d.kind === 'audioinput');
-      if (!hasAudio) {
-        setError('No microphone found.');
-        return;
-      }
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new window.MediaRecorder(stream);
+      const recorder = new MediaRecorder(stream);
       const chunks = [];
+
       recorder.ondataavailable = (e) => chunks.push(e.data);
+
       recorder.onstop = async () => {
         const blob = new Blob(chunks, { type: 'audio/webm' });
-        await processAndStore(blob, 'audio');
-        stream.getTracks().forEach(t => t.stop());
+        await processAndSave(blob, 'audio');
+        stream.getTracks().forEach((t) => t.stop());
       };
+
       recorder.start();
       setTimeout(() => recorder.state === 'recording' && recorder.stop(), 60000);
-    } catch (e) {
-      setError('Audio recording failed: ' + e.message);
-    }
+    } catch {}
   };
 
-  // Screen recording
   const startScreenRecording = async () => {
     try {
-      if (!navigator.mediaDevices.getDisplayMedia) {
-        setError('Screen recording not supported in this browser.');
-        return;
-      }
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-      const recorder = new window.MediaRecorder(stream);
+      const recorder = new MediaRecorder(stream);
       const chunks = [];
+
       recorder.ondataavailable = (e) => chunks.push(e.data);
+
       recorder.onstop = async () => {
         const blob = new Blob(chunks, { type: 'video/webm' });
-        await processAndStore(blob, 'screen');
-        stream.getTracks().forEach(t => t.stop());
+        await processAndSave(blob, 'screen');
       };
+
       recorder.start();
       stream.getVideoTracks()[0].onended = () => {
-        recorder.state === 'recording' && recorder.stop();
+        if (recorder.state === 'recording') recorder.stop();
       };
-    } catch (e) {
-      setError('Screen recording denied: ' + e.message);
-    }
+    } catch {}
   };
 
-  // Location capture
   const captureLocation = () => {
-    if (!navigator.geolocation) {
-      setError('Geolocation not supported.');
-      return;
-    }
+    if (!navigator.geolocation) return;
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
-        const locationData = {
-          latitude: pos.coords.latitude,
-          longitude: pos.coords.longitude,
-          accuracy: pos.coords.accuracy,
+        const data = {
+          lat: pos.coords.latitude,
+          lon: pos.coords.longitude,
+          acc: pos.coords.accuracy,
           timestamp: new Date().toISOString()
         };
-        await processAndStore(locationData, 'location');
+        await processAndSave(data, 'location');
       },
-      (err) => setError('Location error: ' + err.message),
+      () => {},
       { enableHighAccuracy: true, timeout: 10000 }
     );
   };
 
-  // Encrypt and store evidence
-  const processAndStore = async (data, type) => {
+  const processAndSave = async (data, type) => {
     const metadata = {
       type,
       timestamp: new Date().toISOString(),
       userAgent: navigator.userAgent,
       url: window.location.href
     };
-    let buffer;
-    if (data instanceof Blob) {
-      buffer = await data.arrayBuffer();
-    } else if (typeof data === 'object') {
-      buffer = new TextEncoder().encode(JSON.stringify(data));
-    } else if (typeof data === 'string') {
-      buffer = new TextEncoder().encode(data);
-    } else {
-      buffer = data;
-    }
+
+    let buffer = data instanceof Blob ? await data.arrayBuffer() : JSON.stringify(data);
     const encrypted = await encryptData(buffer);
-    await saveToLocalStorage(encrypted, metadata);
+
+    const saveData = {
+      metadata,
+      encrypted: Array.from(encrypted.encrypted),
+      iv: Array.from(encrypted.iv)
+    };
+
+    localStorage.setItem(`evidence_${type}`, JSON.stringify(saveData));
+  };
+
+  const downloadEvidence = (type) => {
+    const saved = localStorage.getItem(`evidence_${type}`);
+    if (!saved) return;
+    const parsed = JSON.parse(saved);
+    const encryptedBytes = new Uint8Array(parsed.encrypted);
+    const blob = new Blob([encryptedBytes], {
+      type: type === 'audio' ? 'audio/webm' : 'video/webm'
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${type}_evidence_${Date.now()}.webm`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const getIcon = (condition) => {
+    switch (condition.toLowerCase()) {
+      case 'sunny': return '☀️';
+      case 'partly cloudy': return '⛅';
+      case 'cloudy': return '☁️';
+      case 'rainy': return '🌧️';
+      default: return '⛅';
+    }
   };
 
   return (
-    <div>
-      <div style={{ fontSize: 40, cursor: 'pointer' }} onClick={handleCloudClick} title="Triple-click or press Ctrl+Shift+S for SOS">
-        ⛅
-      </div>
-      <div style={{ marginTop: 10 }}>
-        <span>Triple-click the icon or press <b>Ctrl+Shift+S</b> to activate Silent SOS.</span>
-      </div>
-      {sosActive && <div style={{ color: 'red', marginTop: 20 }}>SOS Activated! Evidence is being recorded and stored.</div>}
-      {error && <div style={{ color: 'orange', marginTop: 20 }}>{error}</div>}
+    <div className="weather-app">
+      <header className="weather-header">
+        <h1>WeatherNow</h1>
+        <div className="location">{weather.location}</div>
+      </header>
+
+      <main className="weather-main">
+        <div className="current-weather">
+          <div className="temperature">
+            <span className="temp-value">{weather.temperature}°</span>
+            <div
+              className="weather-icon"
+              onClick={handleCloudClick}
+              style={{ cursor: 'pointer' }}
+            >
+              {getIcon(weather.condition)}
+            </div>
+          </div>
+          <div className="weather-details">
+            <div className="condition">{weather.condition}</div>
+            <div className="stats">
+              <div className="stat"><span className="label">Humidity</span><span className="value">{weather.humidity}%</span></div>
+              <div className="stat"><span className="label">Wind</span><span className="value">{weather.windSpeed} mph</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div className="forecast">
+          <h3>3-Day Forecast</h3>
+          <div className="forecast-list">
+            {weather.forecast.map((day, i) => (
+              <div key={i} className="forecast-item">
+                <div className="day">{day.day}</div>
+                <div className="forecast-icon">{getIcon(day.condition)}</div>
+                <div className="temps">
+                  <span className="high">{day.high}°</span>
+                  <span className="low">{day.low}°</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="weather-tips">
+          <h3>Weather Tips</h3>
+          <div className="tips-list">
+            <div className="tip">🌟 Great day for outdoor activities!</div>
+            <div className="tip">🧥 Light jacket recommended for evening</div>
+            <div className="tip">☔ Keep an umbrella handy this week</div>
+          </div>
+        </div>
+
+        {downloadVisible && (
+          <div style={{ padding: '20px', textAlign: 'center' }}>
+            <h3>📥 Download Evidence</h3>
+            {['video', 'audio', 'screen'].map((type) => (
+              <button
+                key={type}
+                onClick={() => downloadEvidence(type)}
+                style={{
+                  margin: '5px',
+                  padding: '10px 15px',
+                  background: '#fff',
+                  color: '#0984e3',
+                  border: 'none',
+                  borderRadius: '5px',
+                  cursor: 'pointer'
+                }}
+              >
+                Download {type}
+              </button>
+            ))}
+          </div>
+        )}
+      </main>
+
+      <footer className="weather-footer">
+        Last updated: {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+      </footer>
     </div>
   );
 };
+
+// Inject styles
+const styles = `/* full weather-app CSS pasted here from earlier */`;
+const styleSheet = document.createElement('style');
+styleSheet.textContent = styles;
+document.head.appendChild(styleSheet);
 
 export default SilentSOS;
