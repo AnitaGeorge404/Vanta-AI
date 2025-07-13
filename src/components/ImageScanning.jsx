@@ -1,19 +1,344 @@
-import React, { useState, useRef } from 'react';
-import { Upload, Link, Search, Shield, AlertTriangle, CheckCircle, Eye, Image, Video, Hash, Scan } from 'lucide-react';
+import React, { useState, useRef, useCallback } from 'react';
+import { Upload, Link, Search, Shield, AlertTriangle, CheckCircle, Eye, Image, Video, Hash, Scan, X } from 'lucide-react';
 
-const AIScanner = () => {
+const ImageScanning = () => {
   const [activeTab, setActiveTab] = useState('upload');
   const [files, setFiles] = useState([]);
   const [scanUrl, setScanUrl] = useState('');
   const [scanning, setScanning] = useState(false);
   const [results, setResults] = useState(null);
   const [scanProgress, setScanProgress] = useState(0);
+  const [error, setError] = useState('');
   const fileInputRef = useRef(null);
+
+  // Utility function to calculate file hash
+  const calculateHash = async (file) => {
+    const buffer = await file.arrayBuffer();
+    const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  };
+
+  // Analyze image pixels for anomalies
+  const analyzeImagePixels = (canvas, ctx) => {
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const data = imageData.data;
+    
+    let totalVariation = 0;
+    let edgeCount = 0;
+    let anomalies = 0;
+    
+    // Simple edge detection and anomaly detection
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      
+      // Check for unnatural color patterns
+      if (Math.abs(r - g) < 5 && Math.abs(g - b) < 5 && Math.abs(r - b) < 5) {
+        anomalies++;
+      }
+      
+      // Simple edge detection
+      if (i < data.length - 4) {
+        const nextR = data[i + 4];
+        const variation = Math.abs(r - nextR);
+        totalVariation += variation;
+        if (variation > 50) edgeCount++;
+      }
+    }
+    
+    const pixelCount = data.length / 4;
+    const anomalyRatio = anomalies / pixelCount;
+    const averageVariation = totalVariation / pixelCount;
+    
+    return {
+      anomalyRatio,
+      averageVariation,
+      edgeCount,
+      totalPixels: pixelCount
+    };
+  };
+
+  // Detect facial regions and analyze consistency
+  const analyzeFacialConsistency = (canvas, ctx) => {
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const data = imageData.data;
+    
+    // Simple skin tone detection
+    let skinPixels = 0;
+    let skinToneVariation = 0;
+    const skinTones = [];
+    
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      
+      // Basic skin tone detection (simplified)
+      if (r > 95 && g > 40 && b > 20 && 
+          Math.max(r, g, b) - Math.min(r, g, b) > 15 && 
+          Math.abs(r - g) > 15 && r > g && r > b) {
+        skinPixels++;
+        skinTones.push({ r, g, b });
+      }
+    }
+    
+    // Calculate skin tone consistency
+    if (skinTones.length > 0) {
+      const avgR = skinTones.reduce((sum, tone) => sum + tone.r, 0) / skinTones.length;
+      const avgG = skinTones.reduce((sum, tone) => sum + tone.g, 0) / skinTones.length;
+      const avgB = skinTones.reduce((sum, tone) => sum + tone.b, 0) / skinTones.length;
+      
+      skinToneVariation = skinTones.reduce((sum, tone) => {
+        return sum + Math.abs(tone.r - avgR) + Math.abs(tone.g - avgG) + Math.abs(tone.b - avgB);
+      }, 0) / skinTones.length;
+    }
+    
+    return {
+      skinPixelRatio: skinPixels / (data.length / 4),
+      skinToneVariation,
+      hasFacialContent: skinPixels > 1000
+    };
+  };
+
+  // Analyze compression artifacts
+  const analyzeCompression = (canvas, ctx) => {
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const data = imageData.data;
+    
+    let compressionArtifacts = 0;
+    let blockiness = 0;
+    
+    // Check for JPEG compression artifacts (8x8 blocks)
+    for (let y = 0; y < canvas.height - 8; y += 8) {
+      for (let x = 0; x < canvas.width - 8; x += 8) {
+        let blockVariation = 0;
+        let edgeSharpness = 0;
+        
+        for (let by = 0; by < 8; by++) {
+          for (let bx = 0; bx < 8; bx++) {
+            const idx = ((y + by) * canvas.width + (x + bx)) * 4;
+            if (idx < data.length - 4) {
+              const current = data[idx];
+              const next = data[idx + 4];
+              blockVariation += Math.abs(current - next);
+              
+              if (Math.abs(current - next) > 30) {
+                edgeSharpness++;
+              }
+            }
+          }
+        }
+        
+        if (blockVariation < 100) blockiness++;
+        if (edgeSharpness > 10) compressionArtifacts++;
+      }
+    }
+    
+    return {
+      compressionArtifacts,
+      blockiness,
+      suspiciousBlocks: compressionArtifacts > 5
+    };
+  };
+
+  // Process image file
+  const processImage = (file) => {
+    return new Promise((resolve, reject) => {
+      const img = document.createElement('img');
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      
+      img.onload = () => {
+        canvas.width = img.naturalWidth || img.width;
+        canvas.height = img.naturalHeight || img.height;
+        ctx.drawImage(img, 0, 0);
+        
+        try {
+          const pixelAnalysis = analyzeImagePixels(canvas, ctx);
+          const facialAnalysis = analyzeFacialConsistency(canvas, ctx);
+          const compressionAnalysis = analyzeCompression(canvas, ctx);
+          
+          resolve({
+            pixelAnalysis,
+            facialAnalysis,
+            compressionAnalysis,
+            dimensions: { width: canvas.width, height: canvas.height }
+          });
+        } catch (error) {
+          reject(error);
+        }
+      };
+      
+      img.onerror = (error) => {
+        reject(new Error('Failed to load image: ' + error.message));
+      };
+      
+      img.src = URL.createObjectURL(file);
+    });
+  };
+
+  // Simulate reverse image search
+  const simulateReverseImageSearch = async (hash) => {
+    // Simulate API call delay
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // Simulate search results based on hash pattern
+    const hashNum = parseInt(hash.substring(0, 8), 16);
+    const matches = hashNum % 10; // 0-9 matches
+    
+    return {
+      matches,
+      sources: matches > 0 ? [
+        'stock-photo-site.com',
+        'social-media-platform.com',
+        'news-website.com'
+      ].slice(0, Math.min(matches, 3)) : []
+    };
+  };
+
+  // Main scanning function
+  const performScan = async () => {
+    if ((activeTab === 'upload' && files.length === 0) || (activeTab === 'url' && !scanUrl)) {
+      setError('Please select files or enter a URL to scan.');
+      return;
+    }
+
+    setScanning(true);
+    setScanProgress(0);
+    setResults(null);
+    setError('');
+
+    try {
+      let scanResults = {};
+      
+      if (activeTab === 'upload') {
+        const file = files[0]; // Process first file for demo
+        
+        // Validate file type
+        if (!file.type.startsWith('image/')) {
+          throw new Error('Please select an image file for analysis.');
+        }
+        
+        // Update progress
+        setScanProgress(10);
+        
+        // Calculate hash
+        const hash = await calculateHash(file);
+        setScanProgress(25);
+        
+        // Analyze image
+        const imageAnalysis = await processImage(file);
+        setScanProgress(50);
+        
+        // Perform reverse image search
+        const reverseSearch = await simulateReverseImageSearch(hash);
+        setScanProgress(75);
+        
+        // GAN detection based on pixel analysis
+        const ganSuspicion = imageAnalysis.pixelAnalysis.anomalyRatio > 0.3 ? 'suspicious' : 'clean';
+        const ganConfidence = Math.max(0.6, 1 - imageAnalysis.pixelAnalysis.anomalyRatio);
+        
+        // Facial analysis
+        const facialStatus = imageAnalysis.facialAnalysis.hasFacialContent ? 
+          (imageAnalysis.facialAnalysis.skinToneVariation > 50 ? 'suspicious' : 'clean') : 'clean';
+        const facialConfidence = imageAnalysis.facialAnalysis.hasFacialContent ? 
+          Math.max(0.6, 1 - (imageAnalysis.facialAnalysis.skinToneVariation / 100)) : 0.95;
+        
+        // Compression analysis
+        const compressionSuspicious = imageAnalysis.compressionAnalysis.suspiciousBlocks;
+        
+        scanResults = {
+          ganFingerprint: {
+            status: ganSuspicion,
+            confidence: ganConfidence,
+            details: `Analyzed ${imageAnalysis.pixelAnalysis.totalPixels} pixels. Anomaly ratio: ${(imageAnalysis.pixelAnalysis.anomalyRatio * 100).toFixed(1)}%`
+          },
+          facialDistortion: {
+            status: facialStatus,
+            confidence: facialConfidence,
+            details: imageAnalysis.facialAnalysis.hasFacialContent ? 
+              `Skin tone variation: ${imageAnalysis.facialAnalysis.skinToneVariation.toFixed(1)}` : 
+              'No facial content detected'
+          },
+          reverseImageSearch: {
+            status: reverseSearch.matches > 0 ? 'found' : 'clean',
+            matches: reverseSearch.matches,
+            details: reverseSearch.matches > 0 ? 
+              `Found on: ${reverseSearch.sources.join(', ')}` : 
+              'No matches found in reverse search'
+          },
+          hashMatching: {
+            status: 'clean',
+            matches: 0,
+            details: `SHA-256: ${hash.substring(0, 16)}...`,
+            fullHash: hash
+          },
+          compression: {
+            status: compressionSuspicious ? 'suspicious' : 'clean',
+            artifacts: imageAnalysis.compressionAnalysis.compressionArtifacts,
+            details: `${imageAnalysis.compressionAnalysis.compressionArtifacts} suspicious blocks detected`
+          }
+        };
+        
+        // Calculate overall risk
+        const riskFactors = [
+          ganSuspicion === 'suspicious' ? 1 : 0,
+          facialStatus === 'suspicious' ? 1 : 0,
+          reverseSearch.matches > 2 ? 1 : 0,
+          compressionSuspicious ? 1 : 0
+        ];
+        
+        const riskScore = riskFactors.reduce((sum, factor) => sum + factor, 0);
+        scanResults.overallRisk = riskScore === 0 ? 'low' : riskScore <= 2 ? 'medium' : 'high';
+        
+      } else if (activeTab === 'url') {
+        // URL scanning simulation
+        setScanProgress(50);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        scanResults = {
+          ganFingerprint: {
+            status: 'clean',
+            confidence: 0.89,
+            details: 'Remote image analysis completed'
+          },
+          facialDistortion: {
+            status: 'clean',
+            confidence: 0.92,
+            details: 'No facial inconsistencies detected'
+          },
+          reverseImageSearch: {
+            status: 'clean',
+            matches: 0,
+            details: 'No matches found for remote image'
+          },
+          hashMatching: {
+            status: 'clean',
+            matches: 0,
+            details: 'Remote hash analysis completed'
+          },
+          overallRisk: 'low'
+        };
+      }
+      
+      setScanProgress(100);
+      setResults(scanResults);
+      
+    } catch (error) {
+      console.error('Scan error:', error);
+      setError('Error during scanning: ' + error.message);
+    } finally {
+      setScanning(false);
+    }
+  };
 
   const handleFileUpload = (event) => {
     const selectedFiles = Array.from(event.target.files);
     setFiles(selectedFiles);
     setResults(null);
+    setError('');
   };
 
   const handleDragOver = (e) => {
@@ -25,50 +350,12 @@ const AIScanner = () => {
     const droppedFiles = Array.from(e.dataTransfer.files);
     setFiles(droppedFiles);
     setResults(null);
+    setError('');
   };
 
-  const simulateScanning = () => {
-    setScanning(true);
-    setScanProgress(0);
+  const removeFile = (index) => {
+    setFiles(files.filter((_, i) => i !== index));
     setResults(null);
-
-    const interval = setInterval(() => {
-      setScanProgress(prev => {
-        if (prev >= 100) {
-          clearInterval(interval);
-          setScanning(false);
-          
-          // Simulate scan results
-          const mockResults = {
-            ganFingerprint: {
-              status: 'clean',
-              confidence: 0.92,
-              details: 'No GAN artifacts detected'
-            },
-            facialDistortion: {
-              status: 'suspicious',
-              confidence: 0.78,
-              details: 'Minor facial inconsistencies detected'
-            },
-            reverseImageSearch: {
-              status: 'found',
-              matches: 3,
-              details: 'Found 3 similar images online'
-            },
-            hashMatching: {
-              status: 'clean',
-              matches: 0,
-              details: 'No hash matches in database'
-            },
-            overallRisk: 'medium'
-          };
-          
-          setResults(mockResults);
-          return 100;
-        }
-        return prev + 2;
-      });
-    }, 50);
   };
 
   const getStatusColor = (status) => {
@@ -122,6 +409,14 @@ const AIScanner = () => {
       color: '#6b7280',
       fontSize: '1.1rem',
       marginBottom: '0'
+    },
+    error: {
+      background: '#fee2e2',
+      color: '#dc2626',
+      padding: '15px',
+      borderRadius: '8px',
+      marginBottom: '20px',
+      border: '1px solid #fecaca'
     },
     tabContainer: {
       display: 'flex',
@@ -194,9 +489,6 @@ const AIScanner = () => {
       transition: 'border-color 0.3s ease',
       marginBottom: '20px'
     },
-    urlInputFocus: {
-      borderColor: '#667eea'
-    },
     scanButton: {
       background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
       color: 'white',
@@ -212,10 +504,6 @@ const AIScanner = () => {
       gap: '10px',
       width: '100%',
       justifyContent: 'center'
-    },
-    scanButtonHover: {
-      transform: 'translateY(-2px)',
-      boxShadow: '0 10px 25px rgba(102, 126, 234, 0.3)'
     },
     scanButtonDisabled: {
       background: '#9ca3af',
@@ -247,10 +535,6 @@ const AIScanner = () => {
       borderRadius: '12px',
       padding: '20px',
       transition: 'all 0.3s ease'
-    },
-    resultCardHover: {
-      transform: 'translateY(-5px)',
-      boxShadow: '0 10px 25px rgba(0, 0, 0, 0.1)'
     },
     resultHeader: {
       display: 'flex',
@@ -301,6 +585,19 @@ const AIScanner = () => {
       borderRadius: '8px',
       marginBottom: '10px'
     },
+    removeButton: {
+      background: '#ef4444',
+      color: 'white',
+      border: 'none',
+      borderRadius: '50%',
+      width: '24px',
+      height: '24px',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      cursor: 'pointer',
+      marginLeft: 'auto'
+    },
     riskBadge: {
       display: 'inline-block',
       padding: '5px 15px',
@@ -333,6 +630,12 @@ const AIScanner = () => {
             Advanced detection system for deepfakes, manipulated media, and unauthorized content
           </p>
         </div>
+
+        {error && (
+          <div style={styles.error}>
+            {error}
+          </div>
+        )}
 
         <div style={styles.tabContainer}>
           <button
@@ -396,6 +699,15 @@ const AIScanner = () => {
                     <span style={{ color: '#6b7280', fontSize: '0.9rem' }}>
                       ({(file.size / 1024 / 1024).toFixed(2)} MB)
                     </span>
+                    <button
+                      style={styles.removeButton}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeFile(index);
+                      }}
+                    >
+                      <X size={14} />
+                    </button>
                   </div>
                 ))}
               </div>
@@ -436,7 +748,7 @@ const AIScanner = () => {
             ...styles.scanButton,
             ...(scanning ? styles.scanButtonDisabled : {})
           }}
-          onClick={simulateScanning}
+          onClick={performScan}
           disabled={scanning || (activeTab === 'upload' && files.length === 0) || (activeTab === 'url' && !scanUrl)}
         >
           {scanning ? <Scan className="animate-spin" size={20} /> : <Search size={20} />}
@@ -529,7 +841,7 @@ const AIScanner = () => {
               <div style={styles.resultCard}>
                 <div style={styles.resultHeader}>
                   <Hash size={24} style={{ color: '#667eea' }} />
-                  <div style={styles.resultTitle}>Hash Matching</div>
+                  <div style={styles.resultTitle}>Hash Analysis</div>
                 </div>
                 <div style={{
                   ...styles.resultStatus,
@@ -544,6 +856,27 @@ const AIScanner = () => {
                   {results.hashMatching.details}
                 </div>
               </div>
+
+              {results.compression && (
+                <div style={styles.resultCard}>
+                  <div style={styles.resultHeader}>
+                    <Scan size={24} style={{ color: '#667eea' }} />
+                    <div style={styles.resultTitle}>Compression Analysis</div>
+                  </div>
+                  <div style={{
+                    ...styles.resultStatus,
+                    color: getStatusColor(results.compression.status)
+                  }}>
+                    {getStatusIcon(results.compression.status)}
+                    {results.compression.status.toUpperCase()}
+                  </div>
+                  <div style={styles.resultDetails}>
+                    Artifacts detected: {results.compression.artifacts}
+                    <br />
+                    {results.compression.details}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -552,4 +885,4 @@ const AIScanner = () => {
   );
 };
 
-export default AIScanner;
+export default ImageScanning

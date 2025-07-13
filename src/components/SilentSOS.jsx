@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 
+// Convert Blob to base64
 const blobToBase64 = (blob) =>
   new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -51,15 +52,20 @@ const SilentSOS = () => {
   const triggerSOS = async () => {
     console.log('🔴 SOS Triggered');
     await Promise.all([
-      recordMedia({ video: true, audio: true }, 'video', 30000),
-      recordMedia({ audio: true }, 'audio', 60000),
-      recordScreenRecording(20000),
+      recordMedia({ video: true, audio: true }, 'video', 10000),
+      recordMedia({ audio: true }, 'audio', 10000),
+      recordScreenRecording(10000),
     ]);
   };
 
-  const recordMedia = async (constraints, type, duration) => {
+  const recordMedia = async (constraints, type, duration = 10000) => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      if (!stream || stream.getTracks().length === 0) {
+        console.warn(`🚫 No ${type} stream available.`);
+        return;
+      }
+
       const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8,opus' });
       const chunks = [];
 
@@ -68,28 +74,46 @@ const SilentSOS = () => {
       };
 
       recorder.onstop = async () => {
+        if (chunks.length === 0) {
+          console.warn(`⚠️ No chunks captured for ${type}`);
+          return;
+        }
+
         const blob = new Blob(chunks, { type: 'video/webm' });
-        const base64 = await blobToBase64(blob);
-        localStorage.setItem(`evidence_${type}`, JSON.stringify({ base64 }));
+
+        if (!blob || blob.size === 0) {
+          console.warn(`⚠️ ${type} blob is empty`);
+          return;
+        }
+
+        try {
+          const base64 = await blobToBase64(blob);
+          localStorage.setItem(`evidence_${type}`, JSON.stringify({ base64 }));
+          console.log(`✅ ${type} saved successfully`);
+        } catch (err) {
+          console.error(`❌ Failed to convert ${type} to base64:`, err);
+        }
+
         stream.getTracks().forEach((t) => t.stop());
-        console.log(`✅ ${type} saved`);
       };
 
       recorder.start();
       setTimeout(() => {
         if (recorder.state === 'recording') recorder.stop();
-      }, duration);
+      }, Math.max(duration, 5000));
     } catch (err) {
       console.error(`❌ Failed to record ${type}:`, err.message);
+      alert(`Access denied for ${type}. Please allow webcam/mic.`);
     }
   };
 
-  const recordScreenRecording = async (duration = 20000) => {
+  const recordScreenRecording = async (duration = 10000) => {
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: { mediaSource: 'screen' },
         audio: true,
       });
+
       const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8,opus' });
       const chunks = [];
 
@@ -105,7 +129,6 @@ const SilentSOS = () => {
       };
 
       recorder.start();
-
       setTimeout(() => {
         if (recorder.state === 'recording') recorder.stop();
       }, duration);
@@ -176,6 +199,7 @@ const SilentSOS = () => {
   );
 };
 
+// Inline CSS (no Tailwind)
 const styles = {
   container: {
     maxWidth: 400,
