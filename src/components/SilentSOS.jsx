@@ -5,10 +5,12 @@ const blobToBase64 = (blob) =>
   new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onloadend = () => {
-      const base64 = reader.result?.split(',')[1];
-      base64 ? resolve(base64) : reject('Conversion failed');
+      const result = reader.result;
+      if (!result) return reject('Empty reader result');
+      const base64 = result.split(',')[1];
+      base64 ? resolve(base64) : reject('Base64 split failed');
     };
-    reader.onerror = reject;
+    reader.onerror = (err) => reject('FileReader error: ' + err.message);
     reader.readAsDataURL(blob);
   });
 
@@ -66,11 +68,15 @@ const SilentSOS = () => {
         return;
       }
 
-      const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8,opus' });
+      const mimeType = type === 'audio'
+        ? 'audio/webm;codecs=opus'
+        : 'video/webm;codecs=vp8,opus';
+
+      const recorder = new MediaRecorder(stream, { mimeType });
       const chunks = [];
 
       recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunks.push(e.data);
+        if (e.data && e.data.size > 0) chunks.push(e.data);
       };
 
       recorder.onstop = async () => {
@@ -79,7 +85,7 @@ const SilentSOS = () => {
           return;
         }
 
-        const blob = new Blob(chunks, { type: 'video/webm' });
+        const blob = new Blob(chunks, { type: mimeType });
 
         if (!blob || blob.size === 0) {
           console.warn(`⚠️ ${type} blob is empty`);
@@ -88,6 +94,7 @@ const SilentSOS = () => {
 
         try {
           const base64 = await blobToBase64(blob);
+          if (!base64 || base64 === '') throw new Error('base64 conversion returned empty');
           localStorage.setItem(`evidence_${type}`, JSON.stringify({ base64 }));
           console.log(`✅ ${type} saved successfully`);
         } catch (err) {
@@ -118,14 +125,27 @@ const SilentSOS = () => {
       const chunks = [];
 
       recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunks.push(e.data);
+        if (e.data && e.data.size > 0) chunks.push(e.data);
       };
 
       recorder.onstop = async () => {
+        if (chunks.length === 0) {
+          console.warn(`⚠️ No chunks captured for screen`);
+          return;
+        }
+
         const blob = new Blob(chunks, { type: 'video/webm' });
-        const base64 = await blobToBase64(blob);
-        localStorage.setItem(`evidence_screen`, JSON.stringify({ base64 }));
-        console.log('✅ Screen recording saved');
+
+        try {
+          const base64 = await blobToBase64(blob);
+          if (!base64 || base64 === '') throw new Error('base64 conversion returned empty');
+          localStorage.setItem(`evidence_screen`, JSON.stringify({ base64 }));
+          console.log('✅ Screen recording saved');
+        } catch (err) {
+          console.error('❌ Screen base64 conversion failed:', err);
+        }
+
+        stream.getTracks().forEach((t) => t.stop());
       };
 
       recorder.start();
@@ -138,18 +158,19 @@ const SilentSOS = () => {
   };
 
   const downloadEvidence = (type) => {
-    const data = localStorage.getItem(`evidence_${type}`);
-    if (!data) return alert(`${type} not found`);
-
     try {
+      const data = localStorage.getItem(`evidence_${type}`);
+      if (!data) return alert(`${type} not found`);
       const { base64 } = JSON.parse(data);
-      if (!base64) throw new Error('Missing base64');
+      if (!base64 || base64 === '') throw new Error('Missing or invalid base64');
+      
       const url = `data:video/webm;base64,${base64}`;
       const a = document.createElement('a');
       a.href = url;
       a.download = `${type}_${Date.now()}.webm`;
       a.click();
     } catch (err) {
+      console.error(`Download error:`, err);
       alert(`Error downloading ${type}: ${err.message}`);
     }
   };
@@ -199,7 +220,7 @@ const SilentSOS = () => {
   );
 };
 
-// Inline CSS (no Tailwind)
+// Inline styles
 const styles = {
   container: {
     maxWidth: 400,
