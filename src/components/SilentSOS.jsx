@@ -4,9 +4,8 @@ const blobToBase64 = (blob) =>
   new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onloadend = () => {
-      const result = reader.result;
-      const base64 = result?.split(',')[1];
-      base64 ? resolve(base64) : reject('Failed to convert blob');
+      const base64 = reader.result?.split(',')[1];
+      base64 ? resolve(base64) : reject('Conversion failed');
     };
     reader.onerror = reject;
     reader.readAsDataURL(blob);
@@ -50,26 +49,26 @@ const SilentSOS = () => {
   }, []);
 
   const triggerSOS = async () => {
-    console.log("🔴 SOS Triggered");
+    console.log('🔴 SOS Triggered');
     await Promise.all([
       recordMedia({ video: true, audio: true }, 'video', 30000),
       recordMedia({ audio: true }, 'audio', 60000),
-      recordScreen(),
+      recordScreenRecording(20000),
     ]);
   };
 
   const recordMedia = async (constraints, type, duration) => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      const recorder = new MediaRecorder(stream);
+      const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8,opus' });
       const chunks = [];
 
       recorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) chunks.push(e.data);
+        if (e.data.size > 0) chunks.push(e.data);
       };
 
       recorder.onstop = async () => {
-        const blob = new Blob(chunks, { type: `${type}/webm` });
+        const blob = new Blob(chunks, { type: 'video/webm' });
         const base64 = await blobToBase64(blob);
         localStorage.setItem(`evidence_${type}`, JSON.stringify({ base64 }));
         stream.getTracks().forEach((t) => t.stop());
@@ -81,57 +80,61 @@ const SilentSOS = () => {
         if (recorder.state === 'recording') recorder.stop();
       }, duration);
     } catch (err) {
-      console.error(`❌ Failed to record ${type}:`, err.message || err);
+      console.error(`❌ Failed to record ${type}:`, err.message);
     }
   };
 
-  const recordScreen = async () => {
+  const recordScreenRecording = async (duration = 20000) => {
     try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-      const recorder = new MediaRecorder(stream);
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { mediaSource: 'screen' },
+        audio: true,
+      });
+      const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8,opus' });
       const chunks = [];
 
       recorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) chunks.push(e.data);
+        if (e.data.size > 0) chunks.push(e.data);
       };
 
       recorder.onstop = async () => {
         const blob = new Blob(chunks, { type: 'video/webm' });
         const base64 = await blobToBase64(blob);
         localStorage.setItem(`evidence_screen`, JSON.stringify({ base64 }));
-        console.log(`✅ Screen saved`);
+        console.log('✅ Screen recording saved');
       };
 
       recorder.start();
-      stream.getVideoTracks()[0].onended = () => {
+
+      setTimeout(() => {
         if (recorder.state === 'recording') recorder.stop();
-      };
+      }, duration);
     } catch (err) {
-      console.error("❌ Screen recording denied or failed:", err.message || err);
+      console.error('❌ Screen recording error:', err.message);
     }
   };
 
   const downloadEvidence = (type) => {
-    try {
-      const data = localStorage.getItem(`evidence_${type}`);
-      if (!data) return alert(`${type} not found`);
-      const { base64 } = JSON.parse(data);
-      if (!base64) return alert(`${type} base64 missing`);
+    const data = localStorage.getItem(`evidence_${type}`);
+    if (!data) return alert(`${type} not found`);
 
-      const blobUrl = `data:${type === 'audio' ? 'audio' : 'video'}/webm;base64,${base64}`;
+    try {
+      const { base64 } = JSON.parse(data);
+      if (!base64) throw new Error('Missing base64');
+      const url = `data:video/webm;base64,${base64}`;
       const a = document.createElement('a');
-      a.href = blobUrl;
+      a.href = url;
       a.download = `${type}_${Date.now()}.webm`;
       a.click();
     } catch (err) {
-      console.error(`❌ Download failed for ${type}:`, err.message || err);
+      alert(`Error downloading ${type}: ${err.message}`);
     }
   };
 
   const getIcon = (cond) => {
     const c = cond.toLowerCase();
     if (c.includes('sun')) return '☀️';
-    if (c.includes('cloudy')) return '⛅';
+    if (c.includes('cloud')) return '⛅';
     if (c.includes('rain')) return '🌧️';
     return '☁️';
   };
@@ -183,35 +186,35 @@ const styles = {
     color: 'white',
     borderRadius: 10,
     boxShadow: '0 8px 32px rgba(0,0,0,0.2)',
-    minHeight: '100vh'
+    minHeight: '100vh',
   },
   header: {
     textAlign: 'center',
-    marginBottom: 20
+    marginBottom: 20,
   },
   main: {
     background: 'rgba(255,255,255,0.1)',
     borderRadius: 15,
-    padding: 20
+    padding: 20,
   },
   temperature: {
     fontSize: 48,
     display: 'flex',
     justifyContent: 'center',
     alignItems: 'center',
-    gap: 10
+    gap: 10,
   },
   tempText: {
-    fontWeight: 300
+    fontWeight: 300,
   },
   icon: {
     fontSize: 40,
     cursor: 'pointer',
-    userSelect: 'none'
+    userSelect: 'none',
   },
   download: {
     marginTop: 20,
-    textAlign: 'center'
+    textAlign: 'center',
   },
   button: {
     margin: '4px 8px',
@@ -220,8 +223,8 @@ const styles = {
     color: '#0984e3',
     border: 'none',
     borderRadius: 6,
-    cursor: 'pointer'
-  }
+    cursor: 'pointer',
+  },
 };
 
 export default SilentSOS;
